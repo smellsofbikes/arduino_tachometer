@@ -1,0 +1,217 @@
+//Tachometer using hardware interrupt and averaging.
+//Reads 1 rpm low up to 1000 rpm, about 1% low up to 10,000 rpm, about 3% low up to 100,000 rpm.
+
+#include <LiquidCrystal.h>
+
+volatile long microseconds;           // this is used in calculating elapsed time.
+volatile long rpm = 0;                // reciprocal of time elapsed.
+volatile long counts = 0;             // raw time elapsed
+volatile long averaging_array[14];    // purposefully large for overrun safety.
+// I'm incrementing the array counter inside the interrupt so don't want to take the time to
+// check bounds in there.  As a result I may sometimes overrun.  buffer overruns on arduino are bad.
+int array_index = 0;
+boolean debug = 0;                    // if 1, this dumps the output out through a Serial port, otherwise, to the LCD.
+
+LiquidCrystal lcd(A0,A1,A4,A5,A2,A3); //analog outputs optimize layout routing: rs, enable, d4, d5, d6, d7
+const int sensornumber1 = 7; // jumper 1 for # of interrupts per rev    // need to check if this is right for v6 layout!
+const int sensornumber2 = 8; // jumper 2 for # of interrupts per rev
+const int test_mode_pin = 4; // jumper 3 for hardware testmode
+const int sensor_stim_pin = 3; // hard-wired to input of schmitt trigger
+const int alternate_input = 5; // there's a neat high-frequency library that uses this pin
+const int standard_input = 2; // interrupt 0;
+int sensornumber = 1; // initialized to 1 interrupt per revolution
+int testmode = 0; // initialized to normal operation
+
+void setup()
+{
+ attachInterrupt(0, count, RISING);   // interrupt 0 is digital pin 2.
+ if (debug)
+   Serial.begin(9600);
+ else
+   lcd.begin(8,2);
+ pinMode(sensornumber1, INPUT);
+ pinMode(sensornumber2, INPUT);
+ pinMode(test_mode_pin, INPUT);
+ pinMode(standard_input, INPUT);  // I'm forcing all three of these to be inputs
+ pinMode(alternate_input, INPUT); // because if any isn't, they'll trash the sensor input
+ pinMode(sensor_stim_pin, INPUT);
+ boolean sn1, sn2;
+ sn1 = digitalRead(sensornumber1);
+ sn2 = digitalRead(sensornumber2);
+ if (sn1 == 1 && sn2 == 1)
+   sensornumber = 1;
+ else if (sn1 == 1 && sn2 == 0)
+   sensornumber = 2;
+ else if (sn1 == 0 && sn2 == 1)
+   sensornumber = 4;
+ else if (sn1 == 0 && sn2 == 0)
+   sensornumber = 8;
+ else // there should never be a way to get here
+   sensornumber = 1;
+ if (debug) { Serial.print("expecting "); Serial.print(sensornumber); Serial.println(" pulses per rev."); }
+ else
+ {
+   lcd.clear();                     // write to lcd
+   lcd.setCursor(0,0);
+   lcd.print(sensornumber);
+   lcd.setCursor(2,0);
+   lcd.print("pulses");
+   lcd.setCursor(0,1);
+   lcd.print("per rev");
+   delay(1500);
+ }
+ 
+}
+
+void count()                         // the interrupt routine
+{ 
+  averaging_array[array_index++] = micros() - microseconds;      // get time since last intr
+  microseconds = micros();                                       // reset timer
+}
+
+void loop()
+{
+  volatile long time = 0;           // variables for 500 mS refresh
+  volatile long now = 0;
+  int c;                            // indexing variable
+  
+  c = digitalRead(test_mode_pin);// add testmode stuff here.
+  if (c==0)
+    testmode = 1; // this can totally be collapsed.
+  if (testmode)
+  {
+    pinMode(sensor_stim_pin, OUTPUT); // set to output only in test mode
+    while (1)   // trap in here forever, for the detector test.
+    {
+      int testpin_value = 0;
+      int high_success = 0;
+      int low_success = 0;
+      lcd.clear();                     // write to lcd
+      lcd.setCursor(0,0);
+      lcd.print("Testing");
+      lcd.setCursor(0,1);
+      lcd.print("Hardware");
+      delay(1500);
+      // first, test internal hardware
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("test int");
+      lcd.setCursor(0,1);
+      lcd.print("hardware");
+      delay(1500);
+      // setup, read
+      // figur out which pin is the stim pin.  It's avr pin 5.
+      detachInterrupt(0);
+      digitalWrite(sensor_stim_pin,HIGH);
+      testpin_value = digitalRead(2);   
+      if (testpin_value == 0)
+         high_success = 1;
+      digitalWrite(sensor_stim_pin, LOW);
+      testpin_value = digitalRead(2);   
+      if (testpin_value == 1)
+        low_success = 1;
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("int sense:");
+      lcd.setCursor(0,1);
+      if (high_success && low_success)
+         lcd.print("passed");
+      else
+         lcd.print("failed");  // maybe after this add a trap reporting what's wrong.
+      
+        // then, go into permanent loop checking and reporting on external sensor state.
+        delay(1500);
+        pinMode(sensor_stim_pin, INPUT); // otherwise it drags the sensor low
+        lcd.clear();                     // write to lcd
+        lcd.setCursor(0,0);
+        lcd.print("testing");
+        lcd.setCursor(0,1);
+        lcd.print("ext sense");
+        delay(1500);
+        lcd.clear();                     // write to lcd
+        lcd.setCursor(0,0);
+        lcd.print("rotate");
+        lcd.setCursor(0,1);
+        lcd.print("spindle");
+        delay(1500);
+        lcd.clear();                     // write to lcd
+        lcd.setCursor(0,0);
+        lcd.print("sensing:");
+        // detect and update
+        while(1)
+        {
+          if (digitalRead(2) == 0) // is this the right pin?
+          {
+            lcd.setCursor(0,1);
+            lcd.print("opened");
+          }
+          else
+          {
+            lcd.setCursor(0,1);
+            lcd.print("closed");
+          }
+        }
+      } 
+    }
+  
+  
+  while (1)
+  {
+    if (array_index > 7)            // check to make sure array hasn't overflowed
+      array_index = 0;
+    now = millis()-time;
+    if (now > 500)                  // refresh screen every 500 millisecond
+    {
+      detachInterrupt(0);           // a lot of math, so turn off interrupts to preserve accuracy
+      for (c = 0; c < 8; c++)       // iterate through eight readings
+      {
+        if (debug)
+        {
+          Serial.print("averaging array: ");
+          Serial.println(averaging_array[c]);
+        }
+        counts += averaging_array[c];  // sum
+        averaging_array[c] = 0;        // clear array
+      }
+      counts = counts >> 3;            // divide by 8 (hoping for shift hardware accel)
+      
+      if (debug)
+      {
+        Serial.print("counts: ");
+        Serial.println(counts);
+      }
+      if (counts < 250)                   // catch glitches/noise/out-of-bounds
+        rpm = 0;
+      else if (counts > 100000000)
+        rpm = 0;
+      else
+        rpm = 60000000/counts;            // calculate rpm: 60 seconds times recip of micros
+      if (sensornumber == 2)
+        rpm = rpm >> 1;
+      else if (sensornumber == 4)         // this section divides by number of interrupts per rev
+        rpm = rpm >> 2;
+      else if (sensornumber == 8)
+        rpm = rpm >> 3;  
+      if (debug)
+      {
+        Serial.print("rpm: ");
+        Serial.println(rpm);
+      }
+      else
+      {
+        lcd.clear();                     // write to lcd
+        lcd.setCursor(0,0);
+        lcd.print(rpm);
+        lcd.setCursor(0,1);
+        lcd.print("rpm");
+      }
+      counts = 0;                      // reset counter
+      now = 0;                         // reset refresh timer
+      time = millis();                 // reset refresh timer
+      attachInterrupt(0,count,RISING); // enable interrupts
+    }
+  }
+}
+    
+    
+
