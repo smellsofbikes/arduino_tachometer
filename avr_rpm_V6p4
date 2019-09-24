@@ -63,6 +63,8 @@ void setup()
  
 }
 
+// note I'm not disabling interrupts in the ISR.  I disable interrupts in the math to calculate RPM because I'd rather miss a pulse
+//    than screw up my math by changing the contents of the array.
 void count()                         // the interrupt routine
 { 
   averaging_array[array_index++] = micros() - microseconds;      // get time since last intr
@@ -75,7 +77,7 @@ void loop()
   volatile long now = 0;
   int c;                            // indexing variable
   
-  c = digitalRead(test_mode_pin);// add testmode stuff here.
+  testmode = digitalRead(test_mode_pin);// add testmode stuff here.
   if (c==0)
     testmode = 1; // this can totally be collapsed.
   if (testmode)
@@ -100,7 +102,7 @@ void loop()
       lcd.print("hardware");
       delay(1500);
       // setup, read
-      // figur out which pin is the stim pin.  It's avr pin 5.
+      // figure out which pin is the stim pin.  It's avr pin 5.
       detachInterrupt(0);
       digitalWrite(sensor_stim_pin,HIGH);
       testpin_value = digitalRead(2);   
